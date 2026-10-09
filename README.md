@@ -14,7 +14,7 @@ n'importe quel hyperviseur KVM/QEMU.
 ## Pipeline
 
 Chaque image est versionnée **indépendamment** : un tag `<image>/vX.Y.Z`
-construit et publie cette image, et seulement elle.
+construit, teste et publie cette image, et seulement elle.
 
 ```
  git tag debian-13/v1.2.0 ──push──▶ GitHub Actions (ubuntu-latest + KVM)
@@ -23,6 +23,7 @@ construit et publie cette image, et seulement elle.
                                        │            (vérifie que images/debian-13/ existe)
                                        │
                                        ├─ build : packer init → fmt -check → validate → build
+                                       │          → test (VM jetable + goss)
                                        │          └─▶ artefact debian-13.qcow2
                                        │
                                        └─ release : SHA256SUMS + notes
@@ -65,7 +66,9 @@ Contenu commun :
 │       ├── debian-13.pkr.hcl     # source QEMU + build
 │       ├── variables.pkr.hcl     # variables documentées
 │       ├── cloud-init/           # seed NoCloud utilisé pendant le build uniquement
-│       └── scripts/              # provision.sh, cleanup.sh
+│       ├── scripts/              # provision.sh, cleanup.sh
+│       └── tests/goss.yaml       # tests de l'image produite
+├── tests/test-image.sh           # démarre l'image dans une VM jetable et lance goss
 └── Makefile                      # construction locale
 ```
 
@@ -87,6 +90,7 @@ make init IMAGE=debian-13       # installe le plugin QEMU (version épinglée)
 make fmt                        # formate les fichiers HCL
 make validate IMAGE=debian-13   # fmt -check + validate
 make build IMAGE=debian-13      # => output/debian-13/debian-13.qcow2
+make test IMAGE=debian-13       # teste l'image produite (voir « Tests de l'image »)
 make clean                      # supprime output/ et packer_cache/
 make tag IMAGE=debian-13 VERSION=v1.0.0   # crée le tag de release (local)
 ```
@@ -100,6 +104,38 @@ packer build -var accelerator=tcg -var ssh_timeout=60m images/debian-13
 
 Les autres variables (`disk_size`, `cpus`, `memory`, URL de l'image source…) sont
 décrites dans [`variables.pkr.hcl`](images/debian-13/variables.pkr.hcl).
+
+## Tests de l'image
+
+Avant d'être publiée, chaque image est **démarrée et testée** comme le serait une
+vraie VM. [`tests/test-image.sh`](tests/test-image.sh) :
+
+1. crée un overlay qcow2 jetable (l'image testée n'est jamais modifiée) ;
+2. génère une clé SSH et un seed cloud-init de test qui crée l'utilisateur
+   `tester` **sans préciser de shell** ;
+3. démarre la VM avec QEMU, avec un canal `virtio-serial` pour le guest agent ;
+4. attend SSH et la fin de cloud-init, puis interroge le `qemu-guest-agent`
+   **depuis l'hôte** (`guest-ping`), comme le ferait libvirt ;
+5. copie [goss](https://goss.rocks) (version épinglée, somme SHA-256 vérifiée)
+   dans la VM et exécute `images/<image>/tests/goss.yaml`.
+
+Pour `debian-13`, les tests vérifient notamment :
+
+| Domaine          | Vérification                                                                 |
+|------------------|------------------------------------------------------------------------------|
+| Personnalisation | paquets installés, `qemu-guest-agent` et `ssh` actifs, Debian 13             |
+| Shell par défaut | `/etc/default/useradd` **et** shell réel de `tester` = `/bin/bash`           |
+| Généralisation   | plus de compte `packer` (ni home, ni sudoers)                                |
+| Premier boot     | cloud-init exécuté avec le seed **de test** (instance-id), `machine-id` et clés hôtes SSH **régénérés au boot** |
+| Disque           | partition racine étendue à la taille du disque                               |
+
+En CI, l'étape `Test image` s'exécute juste après le build : une image qui échoue
+n'est ni uploadée ni publiée. En local :
+
+```bash
+make build IMAGE=debian-13 && make test IMAGE=debian-13
+ACCEL=tcg BOOT_TIMEOUT=900 make test IMAGE=debian-13   # sans KVM
+```
 
 ## Publier une version
 
@@ -180,8 +216,9 @@ publié et un disque `cloudinit` contenant la configuration utilisateur.
 
 1. Copier un dossier existant : `cp -r images/debian-13 images/ubuntu-24.04`.
 2. Adapter `local.image_name`, le nom du bloc `source` et le `build`, les URLs de
-   l'image source et de ses sommes de contrôle, ainsi que les scripts.
-3. Vérifier en local : `make validate IMAGE=ubuntu-24.04 && make build IMAGE=ubuntu-24.04`.
+   l'image source et de ses sommes de contrôle, les scripts et les tests
+   (`tests/goss.yaml`, obligatoire).
+3. Vérifier en local : `make validate build test IMAGE=ubuntu-24.04`.
 4. Ouvrir une PR : la CI détecte le nouveau dossier et le valide automatiquement,
    **sans aucune modification du workflow**.
 5. Après fusion, publier la première version : `make tag IMAGE=ubuntu-24.04 VERSION=v1.0.0`.

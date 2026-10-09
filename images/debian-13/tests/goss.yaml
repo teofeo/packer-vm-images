@@ -1,0 +1,92 @@
+# Tests de l'image debian-13 (https://goss.rocks).
+#
+# Exécutés par tests/test-image.sh dans une VM démarrée à partir du qcow2
+# produit, avec un cloud-init de test qui crée l'utilisateur « tester ».
+# Variables fournies par le script :
+#   instance_id : instance-id du seed cloud-init de test.
+
+# --- Personnalisation (provision.sh) -----------------------------------------
+
+package:
+  qemu-guest-agent:
+    installed: true
+  curl:
+    installed: true
+  vim:
+    installed: true
+  htop:
+    installed: true
+  ca-certificates:
+    installed: true
+
+service:
+  # Démarré par udev grâce au canal virtio-serial fourni par le script.
+  qemu-guest-agent:
+    running: true
+  ssh:
+    enabled: true
+    running: true
+
+file:
+  /etc/default/useradd:
+    exists: true
+    contents:
+      - "/^SHELL=/bin/bash$/"
+
+  # --- Généralisation (cleanup.sh + shutdown_command) ------------------------
+
+  /home/packer:
+    exists: false
+  # Recréé au boot pour « tester » : ne doit plus mentionner le compte de build.
+  /etc/sudoers.d/90-cloud-init-users:
+    exists: true
+    contents:
+      - "!packer"
+  /etc/ssh/ssh_host_ed25519_key:
+    exists: true
+
+user:
+  packer:
+    exists: false
+  # Créé par le cloud-init de test SANS shell explicite : vérifie le shell par
+  # défaut de bout en bout.
+  tester:
+    exists: true
+    shell: /bin/bash
+
+command:
+  debian-13:
+    exec: cat /etc/debian_version
+    exit-status: 0
+    stdout:
+      - "/^13\\./"
+
+  # cloud-init s'est exécuté au premier boot avec le seed de test, et non avec
+  # celui du build.
+  cloud-init-done:
+    exec: cloud-init status
+    exit-status: 0
+    stdout:
+      - "status: done"
+  cloud-init-instance-id:
+    exec: cloud-init query instance_id
+    exit-status: 0
+    stdout:
+      - "{{ .Vars.instance_id }}"
+
+  # Identité propre à la VM, régénérée au boot.
+  machine-id-regenerated:
+    exec: cat /etc/machine-id
+    exit-status: 0
+    stdout:
+      - "/^[0-9a-f]{32}$/"
+  ssh-host-keys-generated-at-boot:
+    exec: >-
+      test "$(stat -c %Y /etc/ssh/ssh_host_ed25519_key)"
+      -ge "$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))"
+    exit-status: 0
+
+  # La partition racine a été étendue à la taille du disque (10G).
+  root-filesystem-grown:
+    exec: test "$(df --output=size -BG / | tail -n 1 | tr -dc '0-9')" -ge 9
+    exit-status: 0

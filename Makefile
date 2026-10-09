@@ -1,5 +1,6 @@
 # Construction locale des images Packer.
 # Usage : make build IMAGE=debian-13
+#         make test IMAGE=debian-13
 #         make tag IMAGE=debian-13 VERSION=v1.0.0
 
 PACKER    ?= packer
@@ -7,7 +8,7 @@ IMAGE     ?= debian-13
 IMAGE_DIR := images/$(IMAGE)
 
 .DEFAULT_GOAL := help
-.PHONY: help init fmt validate build clean tag check-image
+.PHONY: help init fmt validate build test clean tag check-image
 
 help: ## Affiche cette aide
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -29,6 +30,9 @@ validate: init ## Vérifie le formatage et valide la configuration de l'image
 
 build: init ## Construit l'image (output/$(IMAGE)/$(IMAGE).qcow2)
 	$(PACKER) build -force $(IMAGE_DIR)
+
+test: check-image ## Démarre l'image produite dans une VM jetable et lance ses tests goss
+	tests/test-image.sh $(IMAGE)
 
 clean: ## Supprime les images produites et le cache Packer
 	rm -rf output packer_cache

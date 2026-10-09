@@ -1,8 +1,8 @@
 name: Build images
 
 # Chaque image a son propre cycle de vie et ses propres releases.
-#   - tag `<image>/v<version>` (ex. `debian-13/v1.0.0`) : build et release de
-#     CETTE image uniquement ;
+#   - tag `<image>/v<version>` (ex. `debian-13/v1.0.0`) : build, tests et
+#     release de CETTE image uniquement ;
 #   - pull request : `packer fmt -check` et `packer validate` sur TOUTES les
 #     images, sans build ni release.
 
@@ -87,6 +87,9 @@ jobs:
       - name: Packer validate
         run: packer validate "$IMAGE_DIR"
 
+      - name: Shellcheck
+        run: shellcheck "$IMAGE_DIR"/scripts/*.sh tests/*.sh
+
       - name: Enable KVM
         if: env.IS_RELEASE == 'true'
         run: |
@@ -105,6 +108,12 @@ jobs:
       - name: Packer build
         if: env.IS_RELEASE == 'true'
         run: packer build -color=false "$IMAGE_DIR"
+
+      # Démarre le qcow2 dans une VM jetable et exécute images/<image>/tests/goss.yaml.
+      # Une image qui échoue n'est ni uploadée, ni publiée.
+      - name: Test image
+        if: env.IS_RELEASE == 'true'
+        run: tests/test-image.sh "${{ matrix.image }}"
 
       - name: Upload image
         if: env.IS_RELEASE == 'true'
