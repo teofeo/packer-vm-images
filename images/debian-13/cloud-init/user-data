@@ -1,0 +1,14 @@
+#cloud-config
+# Seed NoCloud utilisé UNIQUEMENT pendant le build Packer.
+# Il crée un compte temporaire « packer », supprimé par la shutdown_command :
+# l'image publiée ne contient aucun utilisateur ni secret.
+
+# L'utilisateur par défaut de l'image (« debian ») n'est volontairement pas créé.
+users:
+  - name: packer
+    plain_text_passwd: packer
+    lock_passwd: false
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+
+ssh_pwauth: true

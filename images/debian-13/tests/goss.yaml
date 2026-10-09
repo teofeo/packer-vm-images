@@ -1,0 +1,50 @@
+# Tests de l'image debian-13 (https://goss.rocks).
+# Le socle commun est testé par common/tests/goss.yaml, inclus ci-dessous ;
+# ce fichier ne contient que ce qui est propre à Debian.
+
+gossfile:
+  common.yaml: {}
+
+package:
+  qemu-guest-agent:
+    installed: true
+  curl:
+    installed: true
+  vim:
+    installed: true
+  htop:
+    installed: true
+  ca-certificates:
+    installed: true
+  chrony:
+    installed: true
+  unattended-upgrades:
+    installed: true
+  freeipa-client:
+    installed: true
+  # Remplacé par chrony.
+  systemd-timesyncd:
+    installed: false
+
+service:
+  ssh:
+    enabled: true
+    running: true
+  chrony:
+    enabled: true
+    running: true
+  apt-daily-upgrade.timer:
+    enabled: true
+
+file:
+  /etc/apt/apt.conf.d/20auto-upgrades:
+    exists: true
+    contents:
+      - 'APT::Periodic::Unattended-Upgrade "1";'
+
+command:
+  debian-13:
+    exec: cat /etc/debian_version
+    exit-status: 0
+    stdout:
+      - "/^13\\./"

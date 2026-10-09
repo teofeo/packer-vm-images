@@ -1,0 +1,109 @@
+# Tests du socle commun, inclus par images/<image>/tests/goss.yaml.
+#
+# Exécutés par tests/test-image.sh dans une VM démarrée à partir du qcow2
+# produit, avec un cloud-init de test qui crée l'utilisateur « tester ».
+# Variables fournies par le script :
+#   instance_id : instance-id du seed cloud-init de test.
+
+service:
+  # Démarré par udev grâce au canal virtio-serial fourni par le script.
+  qemu-guest-agent:
+    running: true
+  # Installé mais désactivé : chaque VM l'active selon son rôle.
+  node_exporter:
+    enabled: false
+    running: false
+
+user:
+  # Compte de build supprimé par la shutdown_command.
+  packer:
+    exists: false
+  # Créé par le cloud-init de test SANS shell explicite : vérifie le shell par
+  # défaut de bout en bout.
+  tester:
+    exists: true
+    shell: /bin/bash
+  node_exporter:
+    exists: true
+
+file:
+  /home/packer:
+    exists: false
+  # Recréé au boot pour « tester » : ne doit plus mentionner le compte de build.
+  /etc/sudoers.d/90-cloud-init-users:
+    exists: true
+    contents:
+      - "!packer"
+  /etc/default/useradd:
+    exists: true
+    contents:
+      - "/^SHELL=/bin/bash$/"
+  /etc/ssh/ssh_host_ed25519_key:
+    exists: true
+  /etc/ssh/sshd_config.d/10-hardening.conf:
+    exists: true
+  /etc/systemd/journald.conf.d/10-baseline.conf:
+    exists: true
+    contents:
+      - "/^Storage=persistent$/"
+  /var/log/journal:
+    exists: true
+    filetype: directory
+  /usr/local/bin/node_exporter:
+    exists: true
+    mode: "0755"
+  /usr/sbin/ipa-client-install:
+    exists: true
+
+command:
+  # Configuration effective de sshd (et non le seul fichier) : vérifie que le
+  # durcissement l'emporte sur les autres fichiers de sshd_config.d.
+  sshd-hardening:
+    exec: sshd -T
+    exit-status: 0
+    stdout:
+      - "permitrootlogin no"
+      - "passwordauthentication no"
+      - "x11forwarding no"
+      - "maxauthtries 3"
+
+  node-exporter-version:
+    exec: /usr/local/bin/node_exporter --version 2>&1
+    exit-status: 0
+    stdout:
+      - "version 1.12.1 "
+
+  # Synchronisation horaire active (chrony, requis par Kerberos).
+  time-sync:
+    exec: chronyc -n sources
+    exit-status: 0
+
+  # cloud-init s'est exécuté au premier boot avec le seed de test, et non avec
+  # celui du build.
+  cloud-init-done:
+    exec: cloud-init status
+    exit-status: 0
+    stdout:
+      - "status: done"
+  cloud-init-instance-id:
+    exec: cloud-init query instance_id
+    exit-status: 0
+    stdout:
+      - "{{ .Vars.instance_id }}"
+
+  # Identité propre à la VM, régénérée au boot.
+  machine-id-regenerated:
+    exec: cat /etc/machine-id
+    exit-status: 0
+    stdout:
+      - "/^[0-9a-f]{32}$/"
+  ssh-host-keys-generated-at-boot:
+    exec: >-
+      test "$(stat -c %Y /etc/ssh/ssh_host_ed25519_key)"
+      -ge "$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))"
+    exit-status: 0
+
+  # La partition racine a été étendue à la taille du disque (10G).
+  root-filesystem-grown:
+    exec: test "$(df --output=size -BG / | tail -n 1 | tr -dc '0-9')" -ge 9
+    exit-status: 0

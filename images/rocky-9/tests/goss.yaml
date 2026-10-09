@@ -1,0 +1,55 @@
+# Tests de l'image rocky-9 (https://goss.rocks).
+# Le socle commun est testé par common/tests/goss.yaml, inclus ci-dessous ;
+# ce fichier ne contient que ce qui est propre à Rocky Linux.
+
+gossfile:
+  common.yaml: {}
+
+package:
+  qemu-guest-agent:
+    installed: true
+  curl:
+    installed: true
+  vim-enhanced:
+    installed: true
+  htop:
+    installed: true
+  ca-certificates:
+    installed: true
+  chrony:
+    installed: true
+  dnf-automatic:
+    installed: true
+  ipa-client:
+    installed: true
+  epel-release:
+    installed: true
+
+service:
+  sshd:
+    enabled: true
+    running: true
+  chronyd:
+    enabled: true
+    running: true
+  dnf-automatic.timer:
+    enabled: true
+
+file:
+  /etc/dnf/automatic.conf:
+    exists: true
+    contents:
+      - "/^upgrade_type = security$/"
+      - "/^apply_updates = yes$/"
+
+command:
+  rocky-9:
+    exec: cat /etc/rocky-release
+    exit-status: 0
+    stdout:
+      - "/^Rocky Linux release 9\\./"
+  selinux-enforcing:
+    exec: getenforce
+    exit-status: 0
+    stdout:
+      - "Enforcing"
