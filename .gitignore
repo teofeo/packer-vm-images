@@ -1,0 +1,4 @@
+output*/
+packer_cache/
+*.qcow2
+crash.log

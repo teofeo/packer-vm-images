@@ -1,0 +1,110 @@
+name: Build images
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PACKER_VERSION: "1.16.1"
+
+jobs:
+  build:
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ajouter une image = ajouter une entrée ici (dossier images/<nom>/).
+        image:
+          - debian-13
+    env:
+      IMAGE_DIR: images/${{ matrix.image }}
+      # Évite la limite de débit de l'API GitHub lors du `packer init`.
+      PACKER_GITHUB_API_TOKEN: ${{ github.token }}
+      # Les étapes de build ne s'exécutent que sur un tag, pas sur une PR.
+      IS_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@v3.4.0
+        with:
+          version: ${{ env.PACKER_VERSION }}
+
+      - name: Packer init
+        run: packer init "$IMAGE_DIR"
+
+      - name: Packer fmt
+        run: packer fmt -check -diff -recursive "$IMAGE_DIR"
+
+      - name: Packer validate
+        run: packer validate "$IMAGE_DIR"
+
+      - name: Enable KVM
+        if: env.IS_RELEASE == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Install QEMU
+        if: env.IS_RELEASE == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils xorriso
+
+      - name: Packer build
+        if: env.IS_RELEASE == 'true'
+        env:
+          PACKER_LOG: "0"
+        run: packer build -color=false "$IMAGE_DIR"
+
+      - name: Upload image
+        if: env.IS_RELEASE == 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: image-${{ matrix.image }}
+          path: output/${{ matrix.image }}/${{ matrix.image }}.qcow2
+          if-no-files-found: error
+          # Le qcow2 est déjà compressé par Packer.
+          compression-level: 0
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download images
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: image-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- *.qcow2 | tee SHA256SUMS
+
+      - name: Create release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            -- *.qcow2 SHA256SUMS
