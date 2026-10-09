@@ -1,8 +1,14 @@
 name: Build images
 
+# Chaque image a son propre cycle de vie et ses propres releases.
+#   - tag `<image>/v<version>` (ex. `debian-13/v1.0.0`) : build et release de
+#     CETTE image uniquement ;
+#   - pull request : `packer fmt -check` et `packer validate` sur TOUTES les
+#     images, sans build ni release.
+
 on:
   push:
-    tags: ["v*"]
+    tags: ["*/v*"]
   pull_request:
 
 permissions:
@@ -12,22 +18,57 @@ env:
   PACKER_VERSION: "1.16.1"
 
 jobs:
+  prepare:
+    name: Select images
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.select.outputs.images }}
+      image: ${{ steps.select.outputs.image }}
+      version: ${{ steps.select.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Select images
+        id: select
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            # debian-13/v1.0.0 -> image=debian-13, version=v1.0.0
+            image="${GITHUB_REF_NAME%%/*}"
+            version="${GITHUB_REF_NAME#*/}"
+            if [[ ! -d "images/$image" ]]; then
+              echo "::error::Le tag $GITHUB_REF_NAME ne correspond à aucune image (images/$image introuvable)."
+              exit 1
+            fi
+            if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Version invalide « $version » : format attendu <image>/vX.Y.Z."
+              exit 1
+            fi
+            images="$(jq -cn --arg image "$image" '[$image]')"
+            echo "image=$image" >>"$GITHUB_OUTPUT"
+            echo "version=$version" >>"$GITHUB_OUTPUT"
+          else
+            # Tous les dossiers de images/ : aucune liste à maintenir à la main.
+            images="$(find images -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | jq -Rcn '[inputs]')"
+          fi
+          echo "images=$images" >>"$GITHUB_OUTPUT"
+          echo "Images sélectionnées : $images"
+
   build:
     name: Build ${{ matrix.image }}
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # Ajouter une image = ajouter une entrée ici (dossier images/<nom>/).
-        image:
-          - debian-13
+        image: ${{ fromJSON(needs.prepare.outputs.images) }}
     env:
       IMAGE_DIR: images/${{ matrix.image }}
       # Évite la limite de débit de l'API GitHub lors du `packer init`.
       PACKER_GITHUB_API_TOKEN: ${{ github.token }}
       # Les étapes de build ne s'exécutent que sur un tag, pas sur une PR.
-      IS_RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+      IS_RELEASE: ${{ github.ref_type == 'tag' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -63,8 +104,6 @@ jobs:
 
       - name: Packer build
         if: env.IS_RELEASE == 'true'
-        env:
-          PACKER_LOG: "0"
         run: packer build -color=false "$IMAGE_DIR"
 
       - name: Upload image
@@ -79,32 +118,67 @@ jobs:
           retention-days: 1
 
   release:
-    name: Publish release
-    needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    name: Release ${{ needs.prepare.outputs.image }} ${{ needs.prepare.outputs.version }}
+    needs: [prepare, build]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      VERSION: ${{ needs.prepare.outputs.version }}
     steps:
-      - name: Download images
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          # Historique et tags complets, pour retrouver la release précédente.
+          fetch-depth: 0
+
+      - name: Download image
         uses: actions/download-artifact@v8.0.2
         with:
-          pattern: image-*
+          name: image-${{ env.IMAGE }}
           path: dist
-          merge-multiple: true
 
       - name: Generate SHA256SUMS
         working-directory: dist
+        run: sha256sum -- *.qcow2 | tee SHA256SUMS
+
+      - name: Write release notes
         run: |
-          sha256sum -- *.qcow2 | tee SHA256SUMS
+          # Tag précédent de la MÊME image, dans l'ordre des versions (et non le
+          # dernier tag du dépôt, qui peut concerner une autre image).
+          previous="$(git tag --list "$IMAGE/v*" --sort=-v:refname \
+            | grep -A1 -xF "$GITHUB_REF_NAME" | sed -n 2p)"
+          echo "PREVIOUS_TAG=$previous" >>"$GITHUB_ENV"
+
+          base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          {
+            echo "## Téléchargement"
+            echo
+            echo '```bash'
+            echo "curl -fLO $base/$IMAGE.qcow2"
+            echo "curl -fLO $base/SHA256SUMS"
+            echo "sha256sum -c SHA256SUMS"
+            echo '```'
+            echo
+            echo "## Modifications de \`images/$IMAGE\`"
+            echo
+            # Seuls les commits qui touchent le dossier de l'image.
+            changes="$(git log --no-merges --format='- %s (%h)' \
+              "${previous:+$previous..}$GITHUB_REF_NAME" -- "images/$IMAGE")"
+            echo "${changes:-Aucune modification de configuration (reconstruction).}"
+          } >notes.md
+          cat notes.md
 
       - name: Create release
-        working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            -- *.qcow2 SHA256SUMS
+          args=(--title "$IMAGE $VERSION" --notes-file notes.md)
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            # Liste des PR fusionnées depuis la release précédente de l'image,
+            # ajoutée après notes.md.
+            args+=(--generate-notes --notes-start-tag "$PREVIOUS_TAG")
+          fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" -- dist/*.qcow2 dist/SHA256SUMS

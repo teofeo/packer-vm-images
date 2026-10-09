@@ -13,22 +13,31 @@ n'importe quel hyperviseur KVM/QEMU.
 
 ## Pipeline
 
+Chaque image est versionnée **indépendamment** : un tag `<image>/vX.Y.Z`
+construit et publie cette image, et seulement elle.
+
 ```
- git tag v1.2.0 ──push──▶ GitHub Actions (ubuntu-latest + KVM)
-                              │
-                              ├─ build (matrice, un job par image)
-                              │    packer init → fmt -check → validate → build
-                              │    └─▶ artefact <image>.qcow2
-                              │
-                              └─ release (job unique)
-                                   download-artifact → SHA256SUMS
-                                   └─▶ gh release create v1.2.0
-                                          ├─ debian-13.qcow2
-                                          └─ SHA256SUMS
+ git tag debian-13/v1.2.0 ──push──▶ GitHub Actions (ubuntu-latest + KVM)
+                                       │
+                                       ├─ prepare : tag → image=debian-13, version=v1.2.0
+                                       │            (vérifie que images/debian-13/ existe)
+                                       │
+                                       ├─ build : packer init → fmt -check → validate → build
+                                       │          └─▶ artefact debian-13.qcow2
+                                       │
+                                       └─ release : SHA256SUMS + notes
+                                                    └─▶ release « debian-13 v1.2.0 »
+                                                           ├─ debian-13.qcow2
+                                                           └─ SHA256SUMS
 ```
 
-Sur une **pull request**, seuls `packer fmt -check` et `packer validate` sont
+Sur une **pull request**, `prepare` sélectionne automatiquement **tous** les
+dossiers de `images/`, et seuls `packer fmt -check` et `packer validate` sont
 exécutés (ni build, ni release).
+
+Les notes de chaque release contiennent les commandes de téléchargement, les
+commits ayant modifié `images/<image>/` depuis la release précédente **de la
+même image**, puis la liste des PR fusionnées générée par GitHub.
 
 ## Images disponibles
 
@@ -50,7 +59,7 @@ Contenu commun :
 
 ```
 .
-├── .github/workflows/build.yml   # CI : validation (PR) et build + release (tag)
+├── .github/workflows/build.yml   # CI : validation (PR) et build + release (tag <image>/vX.Y.Z)
 ├── images/
 │   └── debian-13/
 │       ├── debian-13.pkr.hcl     # source QEMU + build
@@ -79,6 +88,7 @@ make fmt                        # formate les fichiers HCL
 make validate IMAGE=debian-13   # fmt -check + validate
 make build IMAGE=debian-13      # => output/debian-13/debian-13.qcow2
 make clean                      # supprime output/ et packer_cache/
+make tag IMAGE=debian-13 VERSION=v1.0.0   # crée le tag de release (local)
 ```
 
 Sans KVM (VM imbriquée, macOS…), l'émulation logicielle reste possible, mais
@@ -93,32 +103,47 @@ décrites dans [`variables.pkr.hcl`](images/debian-13/variables.pkr.hcl).
 
 ## Publier une version
 
+Les tags suivent le format `<image>/vX.Y.Z` ([SemVer](https://semver.org/lang/fr/)) :
+
 ```bash
-git tag v1.0.0
-git push --tags
+make tag IMAGE=debian-13 VERSION=v1.0.0   # vérifie le format et l'image
+git push origin debian-13/v1.0.0
 ```
 
-Le workflow construit toutes les images de la matrice puis crée la release
-`v1.0.0` avec les qcow2, le fichier `SHA256SUMS` et des notes générées
-automatiquement. Aucun secret n'est nécessaire (`github.token`).
+(équivalent à `git tag -a debian-13/v1.0.0 -m "debian-13 v1.0.0"`.)
+
+Conventions proposées :
+
+- **patch** (`v1.0.1`) : simple reconstruction pour embarquer les mises à jour
+  de sécurité de Debian ;
+- **mineure** (`v1.1.0`) : ajout de paquets ou de réglages compatibles ;
+- **majeure** (`v2.0.0`) : changement cassant (taille de disque, partitionnement,
+  comportement par défaut…).
+
+Le workflow construit l'image, puis crée la release avec le qcow2 et le fichier
+`SHA256SUMS`. Aucun secret n'est nécessaire (`github.token`). Un tag dont le
+préfixe ne correspond à aucun dossier de `images/` fait échouer le workflow.
 
 ## Consommer une image
 
 URL de téléchargement :
 
 ```
-https://github.com/teofeo/packer-vm-images/releases/download/<tag>/<image>.qcow2
+https://github.com/teofeo/packer-vm-images/releases/download/<image>/<version>/<image>.qcow2
 ```
 
 Téléchargement et vérification :
 
 ```bash
-TAG=v1.0.0
-BASE=https://github.com/teofeo/packer-vm-images/releases/download/$TAG
+BASE=https://github.com/teofeo/packer-vm-images/releases/download/debian-13/v1.0.0
 curl -fLO "$BASE/debian-13.qcow2"
 curl -fLO "$BASE/SHA256SUMS"
-sha256sum -c --ignore-missing SHA256SUMS
+sha256sum -c SHA256SUMS
 ```
+
+> **Toujours épingler une version.** L'URL `releases/latest/download/…` désigne
+> la dernière release *du dépôt*, toutes images confondues : elle peut pointer
+> vers la release d'une autre image.
 
 Exemple de démarrage rapide avec un cloud-init utilisateur (`cloud-localds` est
 fourni par le paquet `cloud-image-utils`) :
@@ -156,18 +181,13 @@ publié et un disque `cloudinit` contenant la configuration utilisateur.
 1. Copier un dossier existant : `cp -r images/debian-13 images/ubuntu-24.04`.
 2. Adapter `local.image_name`, le nom du bloc `source` et le `build`, les URLs de
    l'image source et de ses sommes de contrôle, ainsi que les scripts.
-3. Ajouter une ligne à la matrice du workflow :
+3. Vérifier en local : `make validate IMAGE=ubuntu-24.04 && make build IMAGE=ubuntu-24.04`.
+4. Ouvrir une PR : la CI détecte le nouveau dossier et le valide automatiquement,
+   **sans aucune modification du workflow**.
+5. Après fusion, publier la première version : `make tag IMAGE=ubuntu-24.04 VERSION=v1.0.0`.
 
-   ```yaml
-   image:
-     - debian-13
-     - ubuntu-24.04
-   ```
-
-4. Vérifier en local : `make validate IMAGE=ubuntu-24.04 && make build IMAGE=ubuntu-24.04`.
-
-Convention à respecter : le dossier, `local.image_name` et le fichier produit
-(`output/<image>/<image>.qcow2`) portent le même nom.
+Convention à respecter : le dossier, `local.image_name`, le préfixe des tags et
+le fichier produit (`output/<image>/<image>.qcow2`) portent le même nom.
 
 ## Fonctionnement du build
 
