@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
-# Personnalisation propre à Debian 13 : paquets et services.
+# Personnalisation propre à Rocky Linux 9 : paquets et services.
 # Le socle commun (SSH, journald, node_exporter…) est appliqué ensuite par
 # common/scripts/*.sh.
 # Idempotent : peut être rejoué sans effet de bord sur une image déjà provisionnée.
 set -euo pipefail
 
 readonly PACKAGES=(
-  # Outils
-  qemu-guest-agent curl vim htop ca-certificates
-  # Synchronisation horaire (requise par Kerberos/FreeIPA ; remplace systemd-timesyncd)
+  # Outils (htop vient d'EPEL)
+  qemu-guest-agent curl vim-enhanced htop ca-certificates
+  # Synchronisation horaire (requise par Kerberos/FreeIPA)
   chrony
   # Mises à jour de sécurité automatiques
-  unattended-upgrades
+  dnf-automatic
   # Client FreeIPA (SSSD, Kerberos, certmonger) : l'inscription est faite par Ansible
-  freeipa-client
+  ipa-client
 )
-readonly AUTO_UPGRADES=/etc/apt/apt.conf.d/20auto-upgrades
-
-export DEBIAN_FRONTEND=noninteractive
-readonly APT_OPTS=(-y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+readonly DNF_AUTOMATIC_CONF=/etc/dnf/automatic.conf
 
 log() { printf '==> [provision] %s\n' "$*"; }
 
@@ -36,20 +33,21 @@ wait_for_cloud_init() {
 
 upgrade_system() {
   log "Mise à jour du système"
-  apt-get update -q
-  apt-get "${APT_OPTS[@]}" upgrade
+  dnf -y -q upgrade
 }
 
 install_packages() {
+  log "Activation d'EPEL"
+  dnf -y -q install epel-release
   log "Installation des paquets : ${PACKAGES[*]}"
-  apt-get "${APT_OPTS[@]}" install --no-install-recommends "${PACKAGES[@]}"
+  dnf -y -q install "${PACKAGES[@]}"
 }
 
 enable_services() {
-  # Sous Debian, qemu-guest-agent est généralement « static » : il est démarré
-  # par udev dès que le canal virtio-serial org.qemu.guest_agent.0 est présent.
+  # qemu-guest-agent est « static » : il est démarré par udev dès que le canal
+  # virtio-serial org.qemu.guest_agent.0 est présent.
   local unit state
-  for unit in qemu-guest-agent chrony; do
+  for unit in qemu-guest-agent chronyd; do
     state="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
     case "${state}" in
       enabled | static | indirect)
@@ -64,12 +62,14 @@ enable_services() {
 }
 
 enable_auto_upgrades() {
-  # Origines par défaut d'unattended-upgrades : dépôts de sécurité Debian.
-  log "Mises à jour de sécurité automatiques (${AUTO_UPGRADES})"
-  cat >"${AUTO_UPGRADES}" <<'CONF'
-APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";
-CONF
+  log "Mises à jour de sécurité automatiques (${DNF_AUTOMATIC_CONF})"
+  sed -Ei \
+    -e 's|^[[:space:]]*#?[[:space:]]*upgrade_type[[:space:]]*=.*|upgrade_type = security|' \
+    -e 's|^[[:space:]]*#?[[:space:]]*apply_updates[[:space:]]*=.*|apply_updates = yes|' \
+    "${DNF_AUTOMATIC_CONF}"
+  grep -Eq '^upgrade_type = security$' "${DNF_AUTOMATIC_CONF}"
+  grep -Eq '^apply_updates = yes$' "${DNF_AUTOMATIC_CONF}"
+  systemctl enable dnf-automatic.timer
 }
 
 main() {

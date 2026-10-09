@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Teste une image produite par Packer : démarre une VM jetable à partir du
 # qcow2 (via un overlay, l'image n'est jamais modifiée) avec un cloud-init de
-# test, puis exécute les tests goss de l'image (images/<image>/tests/goss.yaml).
+# test, puis exécute les tests goss de l'image (images/<image>/tests/goss.yaml,
+# qui inclut le socle commun common/tests/goss.yaml).
 #
 # Usage : tests/test-image.sh <image>
 #
@@ -22,6 +23,7 @@ readonly ROOT_DIR
 IMAGE_FILE="$(realpath -m "${IMAGE_FILE:-${ROOT_DIR}/output/${IMAGE}/${IMAGE}.qcow2}")"
 readonly IMAGE_FILE
 readonly GOSSFILE="${ROOT_DIR}/images/${IMAGE}/tests/goss.yaml"
+readonly COMMON_GOSSFILE="${ROOT_DIR}/common/tests/goss.yaml"
 readonly ACCEL="${ACCEL:-kvm}"
 readonly BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"
 readonly SSH_PORT="${SSH_PORT:-2222}"
@@ -58,6 +60,7 @@ vm_ssh() { ssh "${SSH_OPTS[@]}" -p "${SSH_PORT}" tester@127.0.0.1 "$@"; }
 check_prerequisites() {
   [[ -f "${IMAGE_FILE}" ]] || die "image introuvable : ${IMAGE_FILE} (lancer « make build IMAGE=${IMAGE} »)"
   [[ -f "${GOSSFILE}" ]] || die "tests introuvables : ${GOSSFILE}"
+  [[ -f "${COMMON_GOSSFILE}" ]] || die "tests introuvables : ${COMMON_GOSSFILE}"
   local cmd
   for cmd in qemu-system-x86_64 qemu-img xorriso ssh scp ssh-keygen curl python3; do
     command -v "${cmd}" >/dev/null || die "commande manquante : ${cmd}"
@@ -147,8 +150,11 @@ PY
 
 run_goss() {
   log "Exécution des tests goss"
-  scp "${SSH_OPTS[@]}" -P "${SSH_PORT}" -q "${WORK_DIR}/goss" "${GOSSFILE}" tester@127.0.0.1:/tmp/
-  vm_ssh sudo /tmp/goss --gossfile /tmp/goss.yaml \
+  mkdir "${WORK_DIR}/goss-tests"
+  cp "${WORK_DIR}/goss" "${GOSSFILE}" "${WORK_DIR}/goss-tests/"
+  cp "${COMMON_GOSSFILE}" "${WORK_DIR}/goss-tests/common.yaml"
+  scp "${SSH_OPTS[@]}" -P "${SSH_PORT}" -q -r "${WORK_DIR}/goss-tests" tester@127.0.0.1:/tmp/
+  vm_ssh sudo /tmp/goss-tests/goss --gossfile /tmp/goss-tests/goss.yaml \
     --vars-inline "'{\"instance_id\": \"${INSTANCE_ID}\"}'" \
     validate --retry-timeout 60s --sleep 5s --format documentation --no-color
 }

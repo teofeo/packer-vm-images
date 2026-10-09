@@ -10,7 +10,7 @@ packer {
 }
 
 locals {
-  image_name = "debian-13"
+  image_name = "rocky-9"
 
   # Compte temporaire créé par le seed cloud-init (cloud-init/user-data) et
   # supprimé par la shutdown_command : il n'existe que pendant le build.
@@ -36,8 +36,8 @@ locals {
   common_scripts = "${path.root}/../../common/scripts"
 }
 
-source "qemu" "debian-13" {
-  # Image source : image cloud officielle, vérifiée via le SHA512SUMS publié.
+source "qemu" "rocky-9" {
+  # Image source : image cloud officielle, vérifiée via le fichier CHECKSUM publié.
   iso_url      = var.source_image_url
   iso_checksum = "file:${var.source_checksum_url}"
   disk_image   = true
@@ -77,7 +77,7 @@ source "qemu" "debian-13" {
 
 build {
   name    = local.image_name
-  sources = ["source.qemu.debian-13"]
+  sources = ["source.qemu.rocky-9"]
 
   provisioner "shell" {
     execute_command = "sudo env {{ .Vars }} bash '{{ .Path }}'"

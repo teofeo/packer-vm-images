@@ -88,7 +88,7 @@ jobs:
         run: packer validate "$IMAGE_DIR"
 
       - name: Shellcheck
-        run: shellcheck "$IMAGE_DIR"/scripts/*.sh tests/*.sh
+        run: shellcheck "$IMAGE_DIR"/scripts/*.sh common/scripts/*.sh tests/*.sh
 
       - name: Enable KVM
         if: env.IS_RELEASE == 'true'
@@ -171,11 +171,11 @@ jobs:
             echo "sha256sum -c SHA256SUMS"
             echo '```'
             echo
-            echo "## Modifications de \`images/$IMAGE\`"
+            echo "## Modifications de \`images/$IMAGE\` et du socle \`common\`"
             echo
-            # Seuls les commits qui touchent le dossier de l'image.
+            # Seuls les commits qui touchent l'image ou le socle commun.
             changes="$(git log --no-merges --format='- %s (%h)' \
-              "${previous:+$previous..}$GITHUB_REF_NAME" -- "images/$IMAGE")"
+              "${previous:+$previous..}$GITHUB_REF_NAME" -- "images/$IMAGE" common)"
             echo "${changes:-Aucune modification de configuration (reconstruction).}"
           } >notes.md
           cat notes.md

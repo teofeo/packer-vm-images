@@ -1,6 +1,6 @@
-# Tests de l'image debian-13 (https://goss.rocks).
+# Tests de l'image rocky-9 (https://goss.rocks).
 # Le socle commun est testé par common/tests/goss.yaml, inclus ci-dessous ;
-# ce fichier ne contient que ce qui est propre à Debian.
+# ce fichier ne contient que ce qui est propre à Rocky Linux.
 
 gossfile:
   common.yaml: {}
@@ -10,7 +10,7 @@ package:
     installed: true
   curl:
     installed: true
-  vim:
+  vim-enhanced:
     installed: true
   htop:
     installed: true
@@ -18,33 +18,38 @@ package:
     installed: true
   chrony:
     installed: true
-  unattended-upgrades:
+  dnf-automatic:
     installed: true
-  freeipa-client:
+  ipa-client:
     installed: true
-  # Remplacé par chrony.
-  systemd-timesyncd:
-    installed: false
+  epel-release:
+    installed: true
 
 service:
-  ssh:
+  sshd:
     enabled: true
     running: true
-  chrony:
+  chronyd:
     enabled: true
     running: true
-  apt-daily-upgrade.timer:
+  dnf-automatic.timer:
     enabled: true
 
 file:
-  /etc/apt/apt.conf.d/20auto-upgrades:
+  /etc/dnf/automatic.conf:
     exists: true
     contents:
-      - 'APT::Periodic::Unattended-Upgrade "1";'
+      - "/^upgrade_type = security$/"
+      - "/^apply_updates = yes$/"
 
 command:
-  debian-13:
-    exec: cat /etc/debian_version
+  rocky-9:
+    exec: cat /etc/rocky-release
     exit-status: 0
     stdout:
-      - "/^13\\./"
+      - "/^Rocky Linux release 9\\./"
+  selinux-enforcing:
+    exec: getenforce
+    exit-status: 0
+    stdout:
+      - "Enforcing"
