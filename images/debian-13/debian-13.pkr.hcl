@@ -16,6 +16,22 @@ locals {
   # supprimé par la shutdown_command : il n'existe que pendant le build.
   ssh_username = "packer"
   ssh_password = "packer"
+
+  # Suppression du compte de build, exécutée HORS de la session SSH (dans une
+  # unité systemd transitoire) : la commande rend la main immédiatement, puis
+  # les processus du compte sont terminés AVANT le userdel, ce qui évite de
+  # supprimer un utilisateur encore connecté (userdel -f).
+  remove_build_user = join("; ", [
+    "sleep 2",
+    "loginctl terminate-user ${local.ssh_username}",
+    "i=0",
+    "while pgrep -u ${local.ssh_username} >/dev/null && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done",
+    "pkill -KILL -u ${local.ssh_username}",
+    "sleep 1",
+    "userdel ${local.ssh_username}",
+    "rm -rf /home/${local.ssh_username} /etc/sudoers.d/90-cloud-init-users",
+    "shutdown -P now",
+  ])
 }
 
 source "qemu" "debian-13" {
@@ -49,9 +65,9 @@ source "qemu" "debian-13" {
   ssh_password = local.ssh_password
   ssh_timeout  = var.ssh_timeout
 
-  # Le compte de build est supprimé au tout dernier moment, la session SSH
-  # courante l'utilisant encore jusque-là.
-  shutdown_command = "sudo sh -c 'rm -f /etc/sudoers.d/90-cloud-init-users && userdel -rf ${local.ssh_username}; shutdown -P now'"
+  # Le compte de build est supprimé au tout dernier moment (voir
+  # local.remove_build_user), la session SSH courante l'utilisant encore.
+  shutdown_command = "sudo systemd-run --quiet --no-block --collect --unit=remove-build-user /bin/sh -c '${local.remove_build_user}'"
 }
 
 build {
